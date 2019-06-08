@@ -1,0 +1,118 @@
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use App\usermasternode;
+use App\allmasternode;
+use App\User;
+use Auth;
+use App\IP;
+use App\Srvr;
+use App\Setting;
+use Artisan;
+use App\Reward;
+use App\Allreward;
+use Log;
+use App\Http\Controllers\NotificationController;
+class Notification extends Command
+{
+    protected $signature = 'notify:mail';
+    protected $description = 'Send the email notification';
+	
+    public function __construct()
+    {
+         parent::__construct();
+    }
+
+    public function handle()
+    {
+        $this->Moniter();
+		Log::info('cron notification executing ');
+    }
+	 public function Moniter()
+    {	
+        $Servers=Srvr::all();
+		$CoinApiData=array();
+		$CoinApiDataPaid=array();
+		$CoinApiDataSEEN=array();
+		if($Servers){		
+			foreach($Servers as $Server){
+				try {		
+					$CoinApiData[$Server->id]=json_decode(file_get_contents($Server->api_link));
+				} catch (ProcessFailedException $exception) {
+					echo $e= ' error for  '.$Server->api_link . PHP_EOL;
+					Log::info('notification  '.$e);
+				}
+			}
+		}
+		$coinUsed=Usermasternode::groupBy('masternode_id')->pluck('masternode_id')->toArray();	
+		$allmasternode=count($coinUsed)>0?Allmasternode::whereIn('id',$coinUsed)->get():null;		
+		$CoinApiDataPaid=array();
+		if($allmasternode){		
+			foreach($allmasternode as $coin){
+				try {
+					$CoinApiDataPaid[$coin->id]=json_decode(file_get_contents('http://192.168.0.200:3006/mn_paid_api/'.$coin->shortnm));	
+				} catch (ProcessFailedException $exception) {
+					echo $e=' error for  '.$coin->shortnm . PHP_EOL;	
+					Log::info('notification  '.$e);
+				}
+			}
+		}
+		$notification= new NotificationController(true);
+		$masternodes = usermasternode::where('step',5)->with('masternode')->get()->shuffle();;
+		//$masternodes = usermasternode::where('id',4447)->with('masternode')->get()->shuffle();;
+		$c=count($masternodes);
+		foreach($masternodes as $key=>$masternode){
+			
+		if($masternode->id ==2831 ||$masternode->id ==5042 ||$masternode->id ==4782 ||$masternode->id ==4784 ){} else{
+			echo $e= PHP_EOL .$key.' out of '.$c. '  look into node '.$masternode->id ;	
+			Log::info('notification  '.$e);
+			if(!$masternode->server_id){
+				$this_server=IP::find($masternode->ips_id);					
+				$this_node=Usermasternode::find($masternode->id);
+				$this_node->server_id=$this_server->server_id;
+				$this_node->save();
+				$masternode->server_id=$this_server->server_id;
+			}
+			if(array_key_exists($masternode->server_id,$CoinApiData)){					
+				$found=array();				
+				if($CoinApiData[$masternode->server_id]){
+					foreach($CoinApiData[$masternode->server_id] as $val){
+						if(($masternode->id==$val->wallet_id)){	
+							if($masternode->enabled!=$val->status){	
+							echo $e='  NodeStatus changed '; 
+							Log::info('notification  '.$e);
+							sleep(1);
+							$notification->NodeStatus($masternode,$val,$masternode->user_id);
+							echo $e='  NodeStatus  notidication sent ';
+							Log::info('notification  '.$e);
+							}							
+						}
+					}
+				}
+			}
+			if($CoinApiDataPaid){
+				if(array_key_exists($masternode->masternode_id,$CoinApiDataPaid)){	
+					foreach($CoinApiDataPaid[$masternode->masternode_id] as $paidval){				 
+						if($masternode->wallet_addr){					
+							if($masternode->wallet_addr==$paidval->wallet_addr){
+								if($masternode->last_reward_date < $paidval->last_paid_date){
+								echo $e='  Reward found'; 
+								Log::info('notification  '.$e);
+								//sleep(1);
+								$notification->Notifications($masternode,$paidval,$masternode->user_id);
+								echo $e= '  Reward found notidication sent ';
+								Log::info('notification  '.$e);
+								}								
+							}
+						}
+					}					 
+				}
+			}
+		}
+		
+		}
+	}
+}
+
